@@ -1,7 +1,7 @@
 require 'amqp/frame'
 
 module AMQP
-  class Error < Exception; end
+  class Error < StandardError; end
 
   module BasicClient
     def process_frame frame
@@ -30,13 +30,14 @@ module AMQP
 
           send Protocol::Connection::Open.new(:virtual_host => @settings[:vhost],
                                               :capabilities => '',
-                                              :insist => false)
+                                              :insist => @settings[:insist])
 
         when Protocol::Connection::OpenOk
           succeed(self)
 
         when Protocol::Connection::Close
-          raise Error, "#{method.reply_text} in #{Protocol.classes[method.class_id].methods[method.method_id]}"
+          # raise Error, "#{method.reply_text} in #{Protocol.classes[method.class_id].methods[method.method_id]}"
+          STDERR.puts "#{method.reply_text} in #{Protocol.classes[method.class_id].methods[method.method_id]}"
 
         when Protocol::Connection::CloseOk
           @on_disconnect.call if @on_disconnect
@@ -61,15 +62,19 @@ module AMQP
       @settings = opts
       extend AMQP.client
 
-      @on_disconnect = proc{ raise Error, "Could not connect to server #{opts[:host]}:#{opts[:port]}" }
+      @on_disconnect ||= proc{ raise Error, "Could not connect to server #{opts[:host]}:#{opts[:port]}" }
 
       timeout @settings[:timeout] if @settings[:timeout]
-      errback{ @on_disconnect.call }
+      errback{ @on_disconnect.call } unless @reconnecting
     end
 
     def connection_completed
       log 'connected'
-      @on_disconnect = proc{ raise Error, 'Disconnected from server' }
+      # @on_disconnect = proc{ raise Error, 'Disconnected from server' }
+      unless @closing
+        @on_disconnect = method(:reconnect)
+        @reconnecting = false
+      end
       @buf = Buffer.new
       send_data HEADER
       send_data [1, 1, VERSION_MAJOR, VERSION_MINOR].pack('C4')
@@ -115,13 +120,21 @@ module AMQP
       send_data data.to_s
     end
 
+    #:stopdoc:
     # def send_data data
     #   log 'send_data', data
     #   super
     # end
+    #:startdoc:
 
     def close &on_disconnect
-      @on_disconnect = on_disconnect if on_disconnect
+      if on_disconnect
+        @closing = true
+        @on_disconnect = proc{
+          on_disconnect.call
+          @closing = false
+        }
+      end
 
       callback{ |c|
         if c.channels.any?
@@ -136,7 +149,29 @@ module AMQP
         end
       }
     end
-  
+
+    def reconnect force = false
+      if @reconnecting and not force
+        # wait 1 second after first reconnect attempt, in between each subsequent attempt
+        EM.add_timer(1){ reconnect(true) }
+        return
+      end
+
+      unless @reconnecting
+        @reconnecting = true
+
+        @deferred_status = nil
+        initialize(@settings)
+
+        mqs = @channels
+        @channels = {}
+        mqs.each{ |_,mq| mq.reset } if mqs
+      end
+
+      log 'reconnecting'
+      EM.reconnect @settings[:host], @settings[:port], self
+    end
+
     def self.connect opts = {}
       opts = AMQP.settings.merge(opts)
       EM.connect opts[:host], opts[:port], self, opts

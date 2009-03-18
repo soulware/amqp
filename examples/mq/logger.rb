@@ -4,7 +4,7 @@ require 'mq/logger'
 
 Logger = MQ::Logger
 
-EM.run{
+AMQP.start(:host => 'localhost') do
   if ARGV[0] == 'server'
 
     MQ.queue('logger').bind(MQ.fanout('logging', :durable => true)).subscribe{|msg|
@@ -13,8 +13,8 @@ EM.run{
       pp(msg)
       puts
     }
-    
-  else
+
+  elsif ARGV[0] == 'client'
 
     log = Logger.new
     log.debug 'its working!'
@@ -37,10 +37,20 @@ EM.run{
     log = Logger.new(:webserver, :timestamp, :hostname, &log.printer)
     log.info 'Request for /', :GET, :session => 'abc'
 
-    AMQP.stop{ EM.stop_event_loop }
+    AMQP.stop{ EM.stop }
+
+  else
+
+    puts
+    puts "#{$0} <client|server>"
+    puts "  client: send logs to message queue"
+    puts "  server: read logs from message queue"
+    puts
+
+    EM.stop
 
   end
-}
+end
 
 __END__
 

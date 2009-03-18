@@ -3,7 +3,7 @@ require 'amqp/buffer'
 require 'amqp/protocol'
 
 module AMQP
-  class Frame
+  class Frame #:nodoc: all
     def initialize payload = nil, channel = 0
       @channel, @payload = channel, payload
     end
@@ -33,7 +33,7 @@ module AMQP
       end
     end
     
-    class Invalid < Exception; end
+    class Invalid < StandardError; end
     
     class Method
       def initialize payload = nil, channel = 0
